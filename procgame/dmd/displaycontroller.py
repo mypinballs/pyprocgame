@@ -2,7 +2,7 @@ from dmd import *
 from layers import *
 
 
-class DisplayController:
+class DisplayController(object):
 	"""Manages the process of obtaining DMD frames from active modes and compositing them together for
 	display on the DMD.
 	
@@ -51,7 +51,9 @@ class DisplayController:
 		and composites a DMD image for this
 		point in time by checking for a ``layer`` attribute on each :class:`~procgame.game.Mode`.
 		If the mode has a layer attribute, that layer's :meth:`~procgame.dmd.Layer.composite_next` method is called
-		to apply that layer's next frame to the frame in progress."""
+		to apply that layer's next frame to the frame in progress.
+		
+		The resulting frame is sent to the :attr:`frame_handlers` and then returned from this method."""
 		layers = []
 		for mode in self.game.modes.modes:
 			if hasattr(mode, 'layer') and mode.layer != None:
@@ -70,3 +72,5 @@ class DisplayController:
 		if frame != None:
 			for handler in self.frame_handlers:
 				handler(frame)
+				
+		return frame
