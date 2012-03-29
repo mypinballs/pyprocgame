@@ -23,7 +23,7 @@ def load_and_append_image(anim, filename):
 	return True
 
 
-def load_and_append_text(anim, filename, dot_map = {'0':0, '1':5, '2':10, '3':15}):
+def load_and_append_text(anim, filename, start=None, end=None, dot_map = {'0':0, '1':5, '2':10, '3':15}):
 	"""Support for text-based DMD files.  Each line in the file describes a
 	row of DMD data, with each character representing a dot.  Dot values are
 	interpreted using the dot_map parameter.  A blank line indicates the end
@@ -67,12 +67,15 @@ def load_and_append_text(anim, filename, dot_map = {'0':0, '1':5, '2':10, '3':15
 		y += 1
 	
 	if y != 0:
-		anim.frames.append(frame) #fixed typo
+		anim.frames.append(frame)
+
+        if start and end:
+            anim.frames = anim.frames[start:end]
 	
 	return True
 
 
-def image_to_dmd(src_filenames, dst_filename):
+def image_to_dmd(src_filenames, dst_filename,start,end):
 	"""docstring for image_to_dmd"""
 	last_filename = None
 	anim = procgame.dmd.Animation()
@@ -89,7 +92,7 @@ def image_to_dmd(src_filenames, dst_filename):
 	
 	for filename in src_filenames:
 		if filename.endswith('.txt'):
-			load_and_append_text(anim=anim, filename=filename)
+			load_and_append_text(anim=anim, filename=filename,start=start,end=end)
 		else:
 			load_and_append_image(anim=anim, filename=filename)
 	
@@ -118,7 +121,7 @@ def tool_get_usage():
   to include all filenames matching that wildcard."""
 
 def tool_run(options, args):
-	if len(args) < 2:
+	if len(args) !=2 and len(args) !=4:
 		return False
-	image_to_dmd(src_filenames=args[0:-1], dst_filename=args[-1])
+	image_to_dmd(src_filenames=args[0],dst_filename=args[1],start=args[2],end=args[3] )
 	return True
