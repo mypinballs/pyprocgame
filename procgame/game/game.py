@@ -10,6 +10,7 @@ from procgame import config
 from gameitems import *
 from procgame import util
 from mode import *
+from pdb import PDBConfig
 
 def config_named(name):
 	if not os.path.isfile(name): # If we cannot find this file easily, try searching the config_path:
@@ -143,7 +144,6 @@ class GameController(object):
 	def ball_starting(self):
 		"""Called by the game framework when a new ball is starting."""
 		self.save_ball_start_time()	
-                print "Ball Start time: % 10.3f" % self.ball_start_time
 	
 	def shoot_again(self):
 		"""Called by the game framework when a new ball is starting which was the result of a stored extra ball (Player.extra_balls).  
@@ -161,8 +161,7 @@ class GameController(object):
 		# Calculate ball time and save it because the start time
 		# gets overwritten when the next ball starts.
 		self.ball_time = self.get_ball_time()
-                print "Ball End time: % 10.3f" % self.ball_end_time
-                self.current_player().game_time += self.ball_time
+		self.current_player().game_time += self.ball_time
 
 		self.ball_ended()
 		if self.current_player().extra_balls > 0:
@@ -195,8 +194,12 @@ class GameController(object):
 		
 	def end_game(self):
 		"""Called by the implementor to mark notify the game that the game has ended."""
-		self.game_ended()
 		self.ball = 0
+		self.game_ended()
+
+	def is_game_over(self):
+		"""Returns `True` if the game is in game over.  A game is in game over if :attr:`ball` is 0."""
+		return self.ball == 0
 
 	def dmd_event(self):
 		"""Called by the GameController when a DMD event has been received."""
@@ -215,30 +218,81 @@ class GameController(object):
 		self.config = config_named(filename)
 		if not self.config:
 			raise ValueError, 'load_config(filename="%s") could not be found. Did you set config_path?' % (filename)
+		self.process_config()
+
+	def load_config_stream(self, stream):
+		"""Reads the YAML machine configuration in stream form (string or opened file) into memory.
+		Configures the switches, lamps, and coils members.
+		Enables notifyHost for the open and closed debounced states on each configured switch.
+		"""
+		self.config = yaml.load(stream)
+		if not self.config:
+			raise ValueError, 'load_config_stream() could not load configuration.  Malformed YAML?'
+		print self.config
+		self.process_config()
+	
+	def process_config(self):
+		"""Called by :meth:`load_config` and :meth:`load_config_stream` to process the values in :attr:`config`."""
 		pairs = [('PRCoils', self.coils, Driver), 
 		         ('PRLamps', self.lamps, Driver), 
 		         ('PRSwitches', self.switches, Switch)]
 		new_virtual_drivers = []
-		polarity = self.machine_type == pinproc.MachineTypeSternWhitestar or self.machine_type == pinproc.MachineTypeSternSAM
+		polarity = self.machine_type == pinproc.MachineTypeSternWhitestar or self.machine_type == pinproc.MachineTypeSternSAM or self.machine_type == pinproc.MachineTypePDB
+		
+		# Because PDBs can be configured in many different ways, we need to traverse
+		# the YAML settings to see how many PDBs are being used.  Then we can configure
+		# the P-ROC appropriately to use those PDBs.  Only then can we relate the YAML
+		# coil/lamp #'s to P-ROC numbers for the collections.
+		if self.machine_type == pinproc.MachineTypePDB:
+			pdb_config = PDBConfig(self.proc, self.config)
 		
 		for section, collection, klass in pairs:
 			sect_dict = self.config[section]
 			for name in sect_dict:
 				item_dict = sect_dict[name]
-				number = pinproc.decode(self.machine_type, str(item_dict['number']))
+
+				# Find the P-ROC number for each item in the YAML sections.  For PDB's
+				# the number is based on the PDB configuration determined above.  For
+				# other machine types, pinproc's decode() method can provide the number.
+				if self.machine_type == pinproc.MachineTypePDB:
+					number = pdb_config.get_proc_number(section, str(item_dict['number']))
+					if number == -1: 
+						self.logger.error('%s Item: %s cannot be controlled by the P-ROC.  Ignoring...', section, name)
+						continue
+				else:
+					number = pinproc.decode(self.machine_type, str(item_dict['number']))
 				item = None
-				if 'bus' in item_dict and item_dict['bus'] == 'AuxPort':
+				if ('bus' in item_dict and item_dict['bus'] == 'AuxPort') or number >= pinproc.DriverCount:
 					item = VirtualDriver(self, name, number, polarity)
 					new_virtual_drivers += [number]
 					
 				else:
 					item = klass(self, name, number)
+					item.yaml_number = str(item_dict['number'])
+					if 'label' in item_dict:
+						item.label = item_dict['label']
 					if 'type' in item_dict:
 						item.type = item_dict['type']
+					
+					if 'tags' in item_dict:
+						tags = item_dict['tags']
+						if type(tags) == str:
+							item.tags = tags.split(',')
+						elif type(tags) == list:
+							item.tags = tags
+						else:
+							self.logger.warning('Configuration item named "%s" has unexpected tags type %s. Should be list or comma-delimited string.' % (name, type(tags)))
 
 					if klass==Switch:
 						if (('debounce' in item_dict and item_dict['debounce'] == False) or number >= pinproc.SwitchNeverDebounceFirst):
 							item.debounce = False
+					if klass==Driver:
+						if ('pulseTime' in item_dict):
+							item.default_pulse_time = item_dict['pulseTime']	
+						if ('polarity' in item_dict):
+							item.reconfigure(item_dict['polarity'])
+								
+
 				collection.add(name, item)
 
 		# In the P-ROC, VirtualDrivers will conflict with regular drivers on the same group.
@@ -252,9 +306,9 @@ class GameController(object):
 					if item.number/8 == base_group_number:
 						items_to_remove += [{name:item.name,number:item.number}]
 				for item in items_to_remove:
-					print "Removing %s from %s" % (item[name],str(collection))
+					self.logger.info( "Removing %s from %s" , item[name],str(collection))
 					collection.remove(item[name], item[number])
-					print "Adding %s to VirtualDrivers" % (item[name])
+					self.logger.info("Adding %s to VirtualDrivers",item[name])
 					collection.add(item[name], VirtualDriver(self, item[name], item[number], polarity))
 
 		if 'PRBallSave' in self.config:
@@ -281,6 +335,7 @@ class GameController(object):
 
 		sect_dict = self.config['PRGame']
 		self.num_balls_total = sect_dict['numBalls']
+
 
 	def load_settings(self, template_filename, user_filename):
 		"""Loads the YAML game settings configuration file.  The game settings
@@ -344,74 +399,57 @@ class GameController(object):
 
 	def enable_flippers(self, enable):
 		#return True
+		
 		"""Enables or disables the flippers AND bumpers."""
-		if self.machine_type == pinproc.MachineTypeWPC or self.machine_type == pinproc.MachineTypeWPC95 or self.machine_type == pinproc.MachineTypeWPCAlphanumeric:
-			for flipper in self.config['PRFlippers']:
-				self.logger.info("Programming flipper %s", flipper)
-				main_coil = self.coils[flipper+'Main']
+		for flipper in self.config['PRFlippers']:
+			self.logger.info("Programming flipper %s", flipper)
+			main_coil = self.coils[flipper+'Main']
+			if self.coils.has_key(flipper+'Hold'): 
+				style = 'wpc'
+				self.logger.info("Enabling WPC style flipper")
 				hold_coil = self.coils[flipper+'Hold']
-				switch_num = self.switches[flipper].number
+			else: 
+				self.logger.info("Enabling Stern style flipper")
+				style = 'stern'
+			switch_num = self.switches[flipper].number
 
-				# Chck to see if the flipper should be activated now.
-				#if enable:
-				#	if self.switches[flipper].is_active():
-				#		self.coils[flipper+'Main'].pulse(34)
-				#		self.coils[flipper+'Hold'].pulse(0)
-				#	else: self.coils[flipper+'Hold'].disable()
-				#else: self.coils[flipper+'Hold'].disable()
-
-				drivers = []
-				if enable:
-					drivers += [pinproc.driver_state_pulse(main_coil.state(), 34)]
+			drivers = []
+			if enable:
+				if style == 'wpc':
+					drivers += [pinproc.driver_state_pulse(main_coil.state(), main_coil.default_pulse_time)]
 					drivers += [pinproc.driver_state_pulse(hold_coil.state(), 0)]
-				self.proc.switch_update_rule(switch_num, 'closed_nondebounced', {'notifyHost':False, 'reloadActive':False}, drivers, len(drivers) > 0)
+				else:
+					drivers += [pinproc.driver_state_patter(main_coil.state(), 2, 18, main_coil.default_pulse_time, True)]
+			self.proc.switch_update_rule(switch_num, 'closed_nondebounced', {'notifyHost':False, 'reloadActive':False}, drivers, len(drivers) > 0)
 			
-				drivers = []
-				if enable:
-					drivers += [pinproc.driver_state_disable(main_coil.state())]
+			drivers = []
+			if enable:
+				drivers += [pinproc.driver_state_disable(main_coil.state())]
+				if style == 'wpc':
 					drivers += [pinproc.driver_state_disable(hold_coil.state())]
 	
-				self.proc.switch_update_rule(switch_num, 'open_nondebounced', {'notifyHost':False, 'reloadActive':False}, drivers, len(drivers) > 0)
+			self.proc.switch_update_rule(switch_num, 'open_nondebounced', {'notifyHost':False, 'reloadActive':False}, drivers, len(drivers) > 0)
 
-				if not enable:
-					main_coil.disable()
+			if not enable:
+				main_coil.disable()
+				if style == 'wpc':
 					hold_coil.disable()
 
-			# Enable the flipper relay on wpcAlphanumeric machines
-                        if self.machine_type == pinproc.MachineTypeWPCAlphanumeric:
-				# 79 corresponds to the circuit on the power/driver board.  It will be 79 for all WPCAlphanumeric machines.
-				flipperRelayPRNumber = 79
-                                if enable:
-                                        self.coils[79].pulse(0)
-                                else:
-                                        self.coils[79].disable()
-                elif self.machine_type == pinproc.MachineTypeSternWhitestar or self.machine_type == pinproc.MachineTypeSternSAM:
-			for flipper in self.config['PRFlippers']:
-				print("  programming flipper %s" % (flipper))
-				main_coil = self.coils[flipper+'Main']
-				switch_num = pinproc.decode(self.machine_type, str(self.switches[flipper].number))
+		# Enable the flipper relay on wpcAlphanumeric machines
+		if self.machine_type == pinproc.MachineTypeWPCAlphanumeric:
+			self.enable_alphanumeric_flippers(enable)
 
-				# Check to see if the flipper should be activated now.
-				#if enable:
-				#	if self.switches[flipper].is_active():
-				#		self.coils[flipper+'Main'].patter(3, 22, 34)
-				#	else: self.coils[flipper+'Main'].disable()
-				#else: self.coils[flipper+'Main'].disable()
+		self.enable_bumpers(enable)
+		
+	def enable_alphanumeric_flippers(self, enable):
+		# 79 corresponds to the circuit on the power/driver board.  It will be 79 for all WPCAlphanumeric machines.
+		flipperRelayPRNumber = 79
+		if enable:
+			self.coils[79].pulse(0)
+		else:
+			self.coils[79].disable()
 
-				drivers = []
-				if enable:
-					drivers += [pinproc.driver_state_patter(main_coil.state(), 2, 18, 34)]
-	
-				self.proc.switch_update_rule(switch_num, 'closed_nondebounced', {'notifyHost':False, 'reloadActive':False}, drivers, len(drivers) > 0)
-			
-				drivers = []
-				if enable:
-					drivers += [pinproc.driver_state_disable(main_coil.state())]
-	
-				self.proc.switch_update_rule(switch_num, 'open_nondebounced', {'notifyHost':False, 'reloadActive':False}, drivers, len(drivers) > 0)
-
-				if not enable:
-					main_coil.disable()
+	def enable_bumpers(self, enable):
 	
 		for bumper in self.config['PRBumpers']:
 			switch_num = self.switches[bumper].number
@@ -419,7 +457,7 @@ class GameController(object):
 
 			drivers = []
 			if enable:
-				drivers += [pinproc.driver_state_pulse(coil.state(), 20)]
+				drivers += [pinproc.driver_state_pulse(coil.state(), coil.default_pulse_time)]
 
 			self.proc.switch_update_rule(switch_num, 'closed_nondebounced', {'notifyHost':False, 'reloadActive':True}, drivers, False)
 
@@ -449,7 +487,7 @@ class GameController(object):
 		coil = self.coils[coil_name];
 		drivers = []
 		if enable:
-			drivers += [pinproc.driver_state_patter(coil.state(),milliseconds_on,milliseconds_off,original_on_time)]
+			drivers += [pinproc.driver_state_patter(coil.state(),milliseconds_on,milliseconds_off,original_on_time, True)]
 		self.proc.switch_update_rule(switch_num, switch_state, {'notifyHost':notify_host, 'reloadActive':reload_active}, drivers, drive_coil_now_if_valid)
 
 	def process_event(self, event):
@@ -462,8 +500,14 @@ class GameController(object):
 			#print "% 10.3f Frame event.  Value=%x" % (time.time()-self.t0, event_value)
 			self.dmd_event()
 		else:
-			sw = self.switches[event_value]
-
+			try:
+				sw = self.switches[event_value]
+				if 'time' in event:
+					sw.hw_timestamp = event['time']
+			except KeyError:
+				self.logger.warning("Received switch event but couldn't find switch %s." % event_value)
+				return
+			
 			if sw.debounce:
 				recvd_state = event_type == pinproc.EventTypeSwitchClosedDebounced
 			else:
@@ -473,6 +517,7 @@ class GameController(object):
 				sw.set_state(recvd_state)
 				self.logger.info("%s:\t%s\t(%s)", sw.name, sw.state_str(),event_type)
 				self.modes.handle_event(event)
+				sw.reset_timer()
 			else:
 				#self.logger.warning("DUPLICATE STATE RECEIVED, IGNORING: %s:\t%s", sw.name, sw.state_str())
 				pass
@@ -501,14 +546,17 @@ class GameController(object):
 		for lamp in self.lamps:
 			lamp.tick()
 	
-	def run_loop(self):
+	def run_loop(self, min_seconds_per_cycle=None):
 		"""Called by the programmer to read and process switch events until interrupted."""
 		loops = 0
 		self.done = False
 		self.dmd_event()
 		try:
 			while self.done == False:
-
+				
+				if min_seconds_per_cycle:
+					t0 = time.time()
+				
 				loops += 1
 				for event in self.get_events():
 					self.process_event(event)
@@ -518,6 +566,15 @@ class GameController(object):
 				if self.proc:
 					self.proc.watchdog_tickle()
 					self.proc.flush()
+				if self.modes.changed:
+					self.modes.logger.info("Modes changed in last run loop cycle, now:")
+					self.modes.log_queue()
+					self.modes.changed = False
+				
+				if min_seconds_per_cycle:
+					dt = time.time() - t0
+					if min_seconds_per_cycle > dt:
+						time.sleep(min_seconds_per_cycle - dt)
 		finally:
 			if loops != 0:
 				dt = time.time()-self.t0

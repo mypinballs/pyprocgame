@@ -2,48 +2,70 @@ import logging
 import time
 
 class AttrCollection(object):
-	"""docstring for AttrCollection"""
+	"""A collection of :class:`procgame.game.GameItem` objects."""
 	def __init__(self):
 		self.__items_by_name = {}
 		self.__items_by_number = {}
 	def __getattr__(self, attr):
 		try:
-			if type(attr) == str:
+			if type(attr) == str or type(attr) == unicode:
 				return self.__items_by_name[attr]
 			else:
 				return self.__items_by_number[attr]
 		except KeyError, e:
-			raise KeyError, "Error looking up key %s" % (attr)
+			raise KeyError, "Error looking up key %s: %s" % (attr, e)
 	def add(self, item, value):
 		self.__items_by_name[item] = value
-		self.__items_by_number[value.number] = value
+		if hasattr(value, 'number'):
+			self.__items_by_number[value.number] = value
 	def remove(self, name, number):
 		del self.__items_by_name[name]
 		del self.__items_by_number[number]
 	def __iter__(self):
-	        for item in self.__items_by_number.itervalues():
-	            yield item
+		for item in self.__items_by_number.itervalues():
+			yield item
 	def __getitem__(self, index):
 		return self.__getattr__(index)
-
+	
 	def has_key(self, attr):
-		if type(attr) == str:
-			return self.__items_by_name.has_key(attr)
-		else:
-			return self.__items_by_number.has_key(attr)
+		return (attr in self) # calls __contains__.
 		
+	def __contains__(self, item):
+		if type(item) == str:
+			return self.__items_by_name.has_key(item)
+		else:
+			return self.__items_by_number.has_key(item)
+	
+	def __len__(self):
+		return len(self.__items_by_name)
+	
+	def items_tagged(self, tag):
+		"""Returns a list of items with the given *tag*."""
+		output = []
+		for item in self:
+			if tag in item.tags:
+				output.append(item)
+		return output
+
 class GameItem(object):
 	"""Base class for :class:`Driver` and :class:`Switch`.  Contained in an instance of :class:`AttrCollection` within the :class:`GameController`."""
 	game = None
 	""":class:`GameController` to which this item belongs."""
 	name = None
 	"""String name of this item."""
+	label = None
+	"""Display name of this item."""
 	number = None
 	"""Integer value for this item providing a mapping to the hardware."""
+	yaml_number = None
+	"""Number string from YAML config file"""
+	tags = None
+	"""List of string tags used to group this item."""
 	def __init__(self, game, name, number):
 		self.game = game
 		self.name = name
 		self.number = number
+		self.tags = []
 
 class Driver(GameItem):
 	"""Represents a driver in a pinball machine, such as a lamp, coil/solenoid, or flasher.
@@ -78,25 +100,39 @@ class Driver(GameItem):
 		self.logger.debug("Driver %s - pulse %d", self.name, milliseconds)
 		self.game.proc.driver_pulse(self.number, milliseconds)
 		self.last_time_changed = time.time()
-	def patter(self, on_time=10, off_time=10, orig_on_time=0):
+	def future_pulse(self, milliseconds=None, timestamp=0):
+		"""Enables this driver for `milliseconds` at P-ROC timestamp: `timestamp`.
+		
+		If no parameter is provided for `milliseconds`, :attr:`default_pulse_time` is used.
+		If no parameter is provided or `timestamp`, 0 is used.
+		``ValueError`` will be raised if `milliseconds` is outside of the range 0-255.
+		"""
+		if milliseconds == None:
+			milliseconds = self.default_pulse_time
+		if not milliseconds in range(256):
+			raise ValueError, 'milliseconds must be in range 0-255.'
+		self.logger.debug("Driver %s - future pulse %d", self.name, milliseconds, timestamp)
+		self.game.proc.driver_future_pulse(self.number, milliseconds, timestamp)
+		self.last_time_changed = time.time()
+	def patter(self, on_time=10, off_time=10, original_on_time=0, now=True):
 		"""Enables a pitter-patter sequence.  
 
-		It starts by activating the driver for `orig_on_time` milliseconds.  
+		It starts by activating the driver for `original_on_time` milliseconds.  
 		Then it repeatedly turns the driver on for `on_time` milliseconds and off for 
 		`off_time` milliseconds.
 		"""
 
-		if not orig_on_time in range(256):
-			raise ValueError, 'orig_on_time must be in range 0-255.'
+		if not original_on_time in range(256):
+			raise ValueError, 'original_on_time must be in range 0-255.'
 		if not on_time in range(128):
 			raise ValueError, 'on_time must be in range 0-127.'
 		if not off_time in range(128):
 			raise ValueError, 'off_time must be in range 0-127.'
 
-		self.logger.debug("Driver %s - patter on:%d, off:%d, orig_on:%d", self.name, on_time, off_time, orig_on_time)
-		self.game.proc.driver_patter(self.number, on_time, off_time, orig_on_time)
+		self.logger.debug("Driver %s - patter on:%d, off:%d, orig_on:%d, now:%s", self.name, on_time, off_time, original_on_time, now)
+		self.game.proc.driver_patter(self.number, on_time, off_time, original_on_time, now)
 		self.last_time_changed = time.time()
-	def pulsed_patter(self, on_time=10, off_time=10, run_time=0):
+	def pulsed_patter(self, on_time=10, off_time=10, run_time=0, now=True):
 		"""Enables a pitter-patter sequence that runs for `run_time` milliseconds.  
 
 		Until it ends, the sequence repeatedly turns the driver on for `on_time` 
@@ -110,8 +146,8 @@ class Driver(GameItem):
 		if not off_time in range(128):
 			raise ValueError, 'off_time must be in range 0-127.'
 
-		self.logger.debug("Driver %s - pulsed patter on:%d, off:%d, run_time:%d", self.name, on_time, off_time, run_time)
-		self.game.proc.driver_pulsed_patter(self.number, on_time, off_time, run_time)
+		self.logger.debug("Driver %s - pulsed patter on:%d, off:%d, run_time:%d, now:%s", self.name, on_time, off_time, run_time, now)
+		self.game.proc.driver_pulsed_patter(self.number, on_time, off_time, run_time, now)
 		self.last_time_changed = time.time()
 	def schedule(self, schedule, cycle_seconds=0, now=True):
 		"""Schedules this driver to be enabled according to the given `schedule` bitmask."""
@@ -136,6 +172,12 @@ class Driver(GameItem):
 	def tick(self):
 		pass
 
+	def reconfigure(self, polarity):
+		state = self.game.proc.driver_get_state(self.number)
+		state['polarity'] = polarity
+		self.game.proc.driver_update_state(state)
+
+
 class Switch(GameItem):
 	"""Represents a switch in a pinball machine.
 	
@@ -149,6 +191,8 @@ class Switch(GameItem):
 	In most applications the :meth:`is_active` and :meth:`is_inactive` methods should be used to determine a switch's state."""
 	last_changed = None
 	""":class:`time` of the last state change of this switch.  `None` if the :class:`GameController` has not yet initialized this switch's state."""
+	hw_timestamp = None
+	"""Hardware timestamp of the last state change of this switch.  `None` until an event is received."""
 	type = None
 	"""``'NO'`` (normally open) or ``'NC'`` (normally closed).  Mechanical switches are usually NO, while opto switches are almost always NC.  
 	This is used to determine whether a switch is active ("in contact with the ball") without ruleset code needing to be concerned with the details of the switch hardware."""
@@ -160,7 +204,6 @@ class Switch(GameItem):
 		self.type = type
 	def set_state(self, state):
 		self.state = state
-		self.reset_timer()
 	def is_state(self, state, seconds = None):
 		# Changed from simple '==' to boolean logic for weird 
 		# TypeError issue when running with Visual Pinball.
@@ -194,7 +237,7 @@ class Switch(GameItem):
 		"""Number of seconds that this switch has been in its current state.
 		This value is reset to 0 by the :class:`GameController` *after* the switch event has been processed by the active :class:`Mode` instances."""
 		if self.last_changed == None:
-			return 0.0
+			return 1000000
 		else:
 			return time.time() - self.last_changed
 	def reset_timer(self):
@@ -241,7 +284,8 @@ class VirtualDriver(Driver):
 		              'patterOffTime':0,
 		              'state':0,
 		              'outputDriveTime':0,
-		              'waitForFirstTimeSlot':0}
+		              'waitForFirstTimeSlot':0,
+		              'futureEnable':False}
 
 		self.curr_value = not (self.curr_state ^ self.state['polarity'])
 		self.logger = logging.getLogger('game.vdriver')
