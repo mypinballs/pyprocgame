@@ -355,6 +355,46 @@ class DateLayer(Layer):
 				self.blink_frames_counter -= 1
 		return self.frame
 
+class TimerLayer(Layer):
+	#Layer that displays a count down in seconds
+	def __init__(self, x, y, font, count=30,justify="right", opaque=False):
+		super(TimerLayer, self).__init__(opaque)
+		self.set_target_position(x, y)
+		self.font = font
+		self.frame = None # Frame that text is rendered into.
+		self.old_frame = None
+		self.justify = justify
+                self.timer_start = int(round(time.time()+count))
+                self.timer = 0
+                self.old_timer = 0
+
+
+
+	def next_frame(self):
+
+                current_count = time.time()
+                self.timer = int(round(self.timer_start-current_count))
+
+                if self.timer !=self.old_timer and self.timer>0:# and self.timer%1==0:
+                    (w, h) = self.font.size(str(self.timer))
+                    self.frame = Frame(w, h)
+                    self.font.draw(self.frame, str(self.timer), 0, 0)
+                    self.old_timer=self.timer
+                    self.old_frame = self.frame
+
+                    if self.justify == "left":
+                        (self.target_x_offset, self.target_y_offset) = (0,0)
+                    elif self.justify == "right":
+                        (self.target_x_offset, self.target_y_offset) = (-w,0)
+                    elif self.justify == "center":
+                        (self.target_x_offset, self.target_y_offset) = (-w/2,0)
+
+                else:
+                    self.frame = self.old_frame
+
+
+		return self.frame
+
 
 class ScriptedLayer(Layer):
 	"""Displays a set of layers based on a simple script.
