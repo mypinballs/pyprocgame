@@ -38,16 +38,19 @@ class SoundController(object):
 				random.shuffle(self.music[key])
 			self.load_music(key)
 			mixer.music.play(loops,start_time)
+                #print("Debug, Music Started")
 
 	def stop_music(self):
 		"""Stop the currently-playing music."""
 		if not self.enabled: return
 		mixer.music.stop()
+                #print("Debug, Music Stopped")
 
 	def fadeout_music(self, time_ms = 450):
 		""" """
 		if not self.enabled: return
 		mixer.music.fadeout(time_ms)
+                #print("Debug, Music Fading Out")
 
 	def load_music(self, key):
 		""" """
