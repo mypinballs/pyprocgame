@@ -19,10 +19,12 @@ class PlayerGame(procgame.game.BasicGame):
 		mode.layer = self.anim_layer
 		self.modes.add(mode)
 	
-	def play(self, filename, repeat):
+	def play(self, filename, repeat, time):
 		anim = procgame.dmd.Animation().load(filename)
 		self.anim_layer.frames = anim.frames
 		self.anim_layer.repeat = repeat
+                if time:
+                    self.anim_layer.frame_time = int(time)
 		if not repeat:
 			self.anim_layer.add_frame_listener(-1, self.end_of_animation)
 	
@@ -33,6 +35,7 @@ class PlayerGame(procgame.game.BasicGame):
 def tool_populate_options(parser):
 	parser.add_option('-m', '--machine-type', action='store', help='wpc, wpc95, stermSAM, sternWhitestar or custom (default)')
 	parser.add_option('-r', '--repeat', action='store_true', help='Repeat the animation indefinitely')
+        parser.add_option('-t', '--time', action='store', help='Frame Time')
 
 def tool_get_usage():
     return """<file.dmd>"""
@@ -48,7 +51,7 @@ def tool_run(options, args):
 	
 	game = PlayerGame(machine_type=machine_type)
 	
-	game.play(filename=args[0], repeat=options.repeat)
+	game.play(filename=args[0], repeat=options.repeat, time=options.time)
 	
 	game.run_loop()
 	del game
